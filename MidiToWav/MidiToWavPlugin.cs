@@ -11,145 +11,145 @@ namespace MidiToWav
     [BepInPlugin("brt.lockpick36.miditowav", "Midi To Wav Replacer", "1.2.0")]
     public class WavReplacerPlugin : BaseUnityPlugin
     {
-        // Centralized asset manager to store and retrieve AudioClips by their MIDI names
+        // Using a static asset manager to keep track of our loaded clips across the entire session
         public static AssetManager WavAssets = new AssetManager();
 
         void Awake()
         {
-            // Initialize asset loading sequence
-            LoadWavs();
-            
-            // Apply all Harmony patches to intercept game methods
-            new Harmony("brt.lockpick36.miditowav").PatchAll();
-            
-            Logger.LogInfo("WavReplacer 1.2.0: 'Aggressive Elevator' mode activated.");
+            // Initializing our custom sound bank
+            LoadExternalSounds();
+
+            var harmony = new Harmony("brt.lockpick36.miditowav");
+            harmony.PatchAll();
+
+            Logger.LogInfo("WavReplacer: Build 1.2.0 loaded. 'Aggressive Elevator' logic is hot.");
         }
 
-        void LoadWavs()
+        void LoadExternalSounds()
         {
-            // Resolve the physical path of the mod folder
-            string modPath = AssetLoader.GetModPath(this);
-            if (!Directory.Exists(modPath)) return;
-
-            // Recursively scan for .wav files and register them into the AssetManager
-            // File names must match the internal MIDI names (e.g., "Elevator.wav")
-            foreach (string filePath in Directory.GetFiles(modPath, "*.wav", SearchOption.AllDirectories))
+            string path = AssetLoader.GetModPath(this);
+            if (!Directory.Exists(path))
             {
-                WavAssets.Add<AudioClip>(Path.GetFileNameWithoutExtension(filePath), AssetLoader.AudioClipFromFile(filePath));
+                Logger.LogWarning("WavReplacer: Mod directory not found. Music replacement will not work.");
+                return;
+            }
+
+            // Scanning for wav files. We use Path.GetFileNameWithoutExtension as the key 
+            // to match internal MIDI track names (e.g., 'Elevator', 'School', etc.)
+            foreach (string file in Directory.GetFiles(path, "*.wav", SearchOption.AllDirectories))
+            {
+                WavAssets.Add<AudioClip>(Path.GetFileNameWithoutExtension(file), AssetLoader.AudioClipFromFile(file));
+                // Logger.LogDebug($"[WavReplacer] Registered: {Path.GetFileName(file)}");
             }
         }
     }
 
-    /// <summary>
-    /// Core synchronization controller attached to every MidiFilePlayer instance.
-    /// Manages the transition between MIDI triggers and WAV playback.
-    /// </summary>
     public class WavSyncController : MonoBehaviour
     {
-        public MidiFilePlayer midiPlayer;
-        public AudioSource audioSource;
-        private string lastMidiName = "";
-        private bool wasPlaying = false;
+        public MidiFilePlayer m_Player;
+        public AudioSource m_Source;
+
+        private string _lastTrack = "";
+        private bool _isCurrentlyPlaying = false;
 
         void Update()
         {
-            if (midiPlayer == null || audioSource == null) return;
+            // Safeguard for scene transitions
+            if (m_Player == null || m_Source == null) return;
 
-            string currentMidi = midiPlayer.MPTK_MidiName;
-            AudioClip custom = WavReplacerPlugin.WavAssets.Get<AudioClip>(currentMidi);
+            string activeMidi = m_Player.MPTK_MidiName;
+            AudioClip customClip = WavReplacerPlugin.WavAssets.Get<AudioClip>(activeMidi);
 
-            // If a replacement WAV exists for the current MIDI track
-            if (custom != null)
+            // Handle only if we have a replacement for this specific MIDI
+            if (customClip != null)
             {
-                if (midiPlayer.MPTK_IsPlaying)
+                if (m_Player.MPTK_IsPlaying)
                 {
-                    // Trigger playback if the MIDI started playing or the track has changed
-                    if (!wasPlaying || lastMidiName != currentMidi)
+                    // If track changed or MIDI just started playing
+                    if (!_isCurrentlyPlaying || _lastTrack != activeMidi)
                     {
-                        audioSource.clip = custom;
-                        audioSource.loop = midiPlayer.MPTK_Loop;
-                        
-                        // Special handling for title screen music persistence
-                        audioSource.time = (currentMidi == "titleFixed" && wasPlaying) ? audioSource.time : 0;
-                        
-                        audioSource.Play();
-                        lastMidiName = currentMidi;
-                        wasPlaying = true;
+                        m_Source.clip = customClip;
+                        m_Source.loop = m_Player.MPTK_Loop;
+
+                        // Patch for title music - prevents resetting when menu reloads
+                        m_Source.time = (activeMidi == "titleFixed" && _isCurrentlyPlaying) ? m_Source.time : 0;
+
+                        m_Source.Play();
+                        _lastTrack = activeMidi;
+                        _isCurrentlyPlaying = true;
                     }
 
-                    // ACTIVE VOLUME MIRRORING:
-                    // We steal the volume level from the MIDI player and apply it to our AudioSource.
-                    // Then we mute the MIDI player (Volume = 0) so only the WAV is audible.
-                    if (midiPlayer.MPTK_Volume > 0f)
+                    // SILENT TAKEOVER LOGIC:
+                    // We steal the volume from the MPTK player and apply it to our AudioSource.
+                    // Then we zero out the original to prevent the "Double Sound" effect.
+                    if (m_Player.MPTK_Volume > 0f)
                     {
-                        audioSource.volume = midiPlayer.MPTK_Volume;
-                        midiPlayer.MPTK_Volume = 0f;
+                        m_Source.volume = m_Player.MPTK_Volume;
+                        m_Player.MPTK_Volume = 0f;
                     }
                 }
-                else if (wasPlaying && currentMidi != "titleFixed")
+                else if (_isCurrentlyPlaying && activeMidi != "titleFixed")
                 {
-                    // Stop WAV if the MIDI player has stopped (except for specific persistent tracks)
-                    audioSource.Stop();
-                    wasPlaying = false;
-                    lastMidiName = "";
+                    m_Source.Stop();
+                    _isCurrentlyPlaying = false;
+                    _lastTrack = "";
                 }
             }
-            else if (audioSource.isPlaying)
+            else if (m_Source.isPlaying)
             {
-                // Fallback: stop audio if no replacement is found for the active track
-                audioSource.Stop();
-                wasPlaying = false;
+                // Stop WAV if game switched to a MIDI we don't have a replacement for
+                m_Source.Stop();
+                _isCurrentlyPlaying = false;
             }
         }
     }
 
-    /// <summary>
-    /// Intercepts the initialization of any MIDI player in the game.
-    /// </summary>
     [HarmonyPatch(typeof(MidiFilePlayer), "Awake")]
-    internal class PatchMidiAwake
+    internal class MidiAwakePatch
     {
         private static void Postfix(MidiFilePlayer __instance)
         {
-            // Attach our proxy controller to the MIDI player's GameObject if not already present
+            // Injecting our proxy controller into the MPTK object.
+            // This ensures every MIDI source in the game is "listened" to by our mod.
             if (__instance.gameObject.GetComponentInChildren<WavSyncController>() == null)
             {
-                GameObject proxy = new GameObject("WavReplacer_Proxy");
-                proxy.transform.SetParent(__instance.transform);
-                
-                var controller = proxy.AddComponent<WavSyncController>();
-                controller.midiPlayer = __instance;
-                
-                // Configure the AudioSource for high-fidelity 2D playback
-                controller.audioSource = proxy.AddComponent<AudioSource>();
-                controller.audioSource.playOnAwake = false;
-                controller.audioSource.spatialBlend = 0f; // Ensure music is global (non-spatial)
-                
-                // Essential for transitions: prevents audio from cutting out during scene loading
-                controller.audioSource.ignoreListenerPause = true; 
+                GameObject proxyObj = new GameObject("WavReplacer_AudioBridge");
+                proxyObj.transform.SetParent(__instance.transform);
+
+                var sync = proxyObj.AddComponent<WavSyncController>();
+                sync.m_Player = __instance;
+
+                sync.m_Source = proxyObj.AddComponent<AudioSource>();
+                sync.m_Source.playOnAwake = false;
+                sync.m_Source.spatialBlend = 0f; // Global 2D sound for music
+
+                // Crucial for 0.14.X: prevents music from being killed by the listener pause during loading
+                sync.m_Source.ignoreListenerPause = true;
             }
         }
     }
 
-    // ELEVATOR FIX 1: Force-start music during the earliest phase of ElevatorScreen initialization
+    // --- ELEVATOR FIXES (The "Aggressive" suite) ---
+
     [HarmonyPatch(typeof(ElevatorScreen), "Initialize")]
-    internal class PatchElevatorEarlyStart
+    internal class ElevatorEarlyStartPatch
     {
+        // Force the music to kick in early during Initialize. 
+        // Original code often delays this, leading to awkward silence.
         private static void Prefix()
         {
             if (MusicManager.Instance != null)
             {
-                // Manually trigger the MIDI engine to ensure our SyncController catches the event early
                 MusicManager.Instance.PlayMidi("Elevator", true);
-                Debug.Log("WavReplacer: Elevator music forced in Initialize Prefix");
+                // Debug.Log("WavReplacer: Forced Elevator start in Initialize.Prefix");
             }
         }
     }
 
-    // ELEVATOR FIX 2: Ensure music continues or restarts during the Results screen
     [HarmonyPatch(typeof(ElevatorScreen), "Results")]
-    internal class PatchElevatorResultsFix
+    internal class ElevatorResultsPersistencePatch
     {
+        // Make sure the music doesn't cut out when results are displayed.
         private static void Prefix()
         {
             if (MusicManager.Instance != null && !MusicManager.Instance.MidiPlayer.MPTK_IsPlaying)
