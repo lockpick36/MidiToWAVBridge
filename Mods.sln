@@ -3,8 +3,6 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.14.36930.0
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BRTRussifier", "BRTRussifier\BRTRussifier.csproj", "{B4EC3887-0544-4036-AADC-DF9D555E5FEB}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MidiToWav", "MidiToWav\MidiToWav.csproj", "{5DD48D68-80C2-4C66-9521-09619DD854E3}"
 EndProject
 Global
